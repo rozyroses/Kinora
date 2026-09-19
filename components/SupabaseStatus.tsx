@@ -24,7 +24,6 @@ export function SupabaseStatus() {
           method: "GET",
           headers: {
             apikey: supabaseConfig.key,
-            Authorization: `Bearer ${supabaseConfig.key}`,
           },
           signal: controller.signal,
         });
