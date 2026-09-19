@@ -5,6 +5,9 @@ import { usePathname, useRouter } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import { getSupabaseClient } from "@/lib/supabase";
 import { Sidebar } from "@/components/Sidebar";
+import { AuthPanel } from "@/components/AuthPanel";
+
+const SESSION_CHECK_TIMEOUT_MS = 4000;
 
 export function AuthShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -20,47 +23,63 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+    let active = true;
+    let settled = false;
+
+    const finish = (nextSession: Session | null) => {
+      if (!active) return;
+      settled = true;
+      setSession(nextSession);
       setReady(true);
+    };
 
-      if (!data.session && pathname !== "/login") {
-        router.replace("/login");
+    const timeout = window.setTimeout(() => {
+      if (!settled) {
+        finish(null);
       }
+    }, SESSION_CHECK_TIMEOUT_MS);
 
-      if (data.session && pathname === "/login") {
-        router.replace("/");
-      }
-    });
+    supabase.auth
+      .getSession()
+      .then(({ data, error }) => {
+        if (error) {
+          finish(null);
+          return;
+        }
+
+        finish(data.session);
+      })
+      .catch(() => finish(null));
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-      setReady(true);
-
-      if (!nextSession && pathname !== "/login") {
-        router.replace("/login");
-      }
-
-      if (nextSession && pathname === "/login") {
-        router.replace("/");
-      }
+      finish(nextSession);
     });
 
-    return () => subscription.unsubscribe();
-  }, [pathname, router]);
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (ready && session && pathname === "/login") {
+      router.replace("/");
+    }
+  }, [pathname, ready, router, session]);
 
   if (!ready) {
     return <LoadingScreen label="Opening your studio..." />;
   }
 
-  if (pathname === "/login") {
-    return <>{children}</>;
+  if (!session) {
+    return <AuthPanel />;
   }
 
-  if (!session) {
-    return <LoadingScreen label="Redirecting to sign in..." />;
+  if (pathname === "/login") {
+    return <LoadingScreen label="Opening your studio..." />;
   }
 
   return (
