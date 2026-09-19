@@ -20,7 +20,7 @@ export function SupabaseStatus() {
 
     async function testConnection() {
       try {
-        const response = await fetch(`${supabaseConfig.url}/rest/v1/`, {
+        const response = await fetch(`${supabaseConfig.url}/auth/v1/settings`, {
           method: "GET",
           headers: {
             apikey: supabaseConfig.key,
