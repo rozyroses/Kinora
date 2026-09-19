@@ -1,17 +1,24 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
 import { getSupabaseClient } from "@/lib/supabase";
 
 type Mode = "signin" | "signup";
 
 export function AuthPanel() {
+  const router = useRouter();
   const [mode, setMode] = useState<Mode>("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+
+  function openStudio() {
+    router.replace("/");
+    router.refresh();
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -27,9 +34,16 @@ export function AuthPanel() {
 
     try {
       if (mode === "signin") {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
+
+        if (!data.session) {
+          setMessage("Signed in, but Kinora could not open a session. Try again.");
+          return;
+        }
+
         setMessage("Signed in. Opening Kinora...");
+        openStudio();
       } else {
         const { data, error } = await supabase.auth.signUp({
           email,
@@ -45,6 +59,7 @@ export function AuthPanel() {
 
         if (data.session) {
           setMessage("Account created. Opening Kinora...");
+          openStudio();
         } else {
           setMessage("Account created. Check your email to confirm your address, then sign in.");
         }
