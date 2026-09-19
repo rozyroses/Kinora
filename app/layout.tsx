@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Sidebar } from "@/components/Sidebar";
+import { AuthShell } from "@/components/AuthShell";
 
 export const metadata: Metadata = {
   title: "Kinora — AI Creative Studio",
@@ -15,10 +15,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <div className="min-h-screen md:flex">
-          <Sidebar />
-          <main className="min-w-0 flex-1">{children}</main>
-        </div>
+        <AuthShell>{children}</AuthShell>
       </body>
     </html>
   );
