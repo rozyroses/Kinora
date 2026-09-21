@@ -1,3 +1,4 @@
+import { FunctionsHttpError } from "@supabase/supabase-js";
 import { getSupabaseClient, supabaseConfig } from "@/lib/supabase";
 
 export type SeedanceMode = "text-to-video" | "image-to-video";
@@ -28,12 +29,44 @@ export type SeedancePrediction = {
 function getErrorMessage(value: unknown) {
   if (typeof value === "string") return value;
 
-  if (value && typeof value === "object" && "message" in value) {
-    const message = (value as { message?: unknown }).message;
-    if (typeof message === "string") return message;
+  if (value && typeof value === "object") {
+    if ("error" in value) {
+      const nested = (value as { error?: unknown }).error;
+      const nestedMessage = getErrorMessage(nested);
+      if (nestedMessage !== "Seedance request failed.") return nestedMessage;
+    }
+
+    if ("message" in value) {
+      const message = (value as { message?: unknown }).message;
+      if (typeof message === "string") return message;
+    }
+
+    if ("detail" in value) {
+      const detail = (value as { detail?: unknown }).detail;
+      if (typeof detail === "string") return detail;
+    }
   }
 
   return "Seedance request failed.";
+}
+
+async function getFunctionErrorMessage(error: unknown) {
+  if (error instanceof FunctionsHttpError) {
+    try {
+      const payload = await error.context.json();
+      const message = getErrorMessage(payload);
+
+      if (message !== "Seedance request failed.") {
+        return message;
+      }
+
+      return JSON.stringify(payload);
+    } catch {
+      return error.message;
+    }
+  }
+
+  return error instanceof Error ? error.message : getErrorMessage(error);
 }
 
 async function requireSession() {
@@ -80,7 +113,7 @@ export async function generateSeedanceVideo(
   });
 
   if (error) {
-    throw new Error(error.message);
+    throw new Error(await getFunctionErrorMessage(error));
   }
 
   if (data?.error) {
@@ -103,7 +136,7 @@ export async function getSeedancePrediction(
   });
 
   if (error) {
-    throw new Error(error.message);
+    throw new Error(await getFunctionErrorMessage(error));
   }
 
   if (data?.error) {
