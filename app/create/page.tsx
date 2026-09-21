@@ -57,12 +57,13 @@ export default function CreatePage() {
       return;
     }
 
+    const activePredictionId = predictionId;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     async function poll() {
       try {
-        const latest = await getSeedancePrediction(predictionId);
+        const latest = await getSeedancePrediction(activePredictionId);
 
         if (cancelled) return;
 
@@ -91,22 +92,25 @@ export default function CreatePage() {
   }, [prediction?.id, prediction?.status]);
 
   useEffect(() => {
+    const predictionId = prediction?.id;
+
     if (
       prediction?.status !== "succeeded" ||
-      !prediction.id ||
+      !predictionId ||
       videoPreviewUrl ||
       isLoadingVideo
     ) {
       return;
     }
 
+    const completedPredictionId = predictionId;
     let cancelled = false;
 
     async function loadVideo() {
       setIsLoadingVideo(true);
 
       try {
-        const blob = await fetchSeedanceVideoBlob(prediction.id!);
+        const blob = await fetchSeedanceVideoBlob(completedPredictionId);
 
         if (cancelled) return;
 
