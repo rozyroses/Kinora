@@ -26,13 +26,13 @@ export type SeedancePrediction = {
   [key: string]: unknown;
 };
 
-function getErrorMessage(value: unknown) {
+function getErrorMessage(value: unknown): string {
   if (typeof value === "string") return value;
 
   if (value && typeof value === "object") {
     if ("error" in value) {
       const nested = (value as { error?: unknown }).error;
-      const nestedMessage = getErrorMessage(nested);
+      const nestedMessage: string = getErrorMessage(nested);
       if (nestedMessage !== "Seedance request failed.") return nestedMessage;
     }
 
