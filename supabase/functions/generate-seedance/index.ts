@@ -1,3 +1,5 @@
+import { createClient } from "npm:@supabase/supabase-js@2";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
@@ -5,17 +7,12 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-function jsonResponse(
-  body: unknown,
-  status = 200,
-  extraHeaders: Record<string, string> = {},
-) {
+function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: {
       ...corsHeaders,
       "Content-Type": "application/json",
-      ...extraHeaders,
     },
   });
 }
@@ -42,6 +39,13 @@ function findFirstHttpUrl(value: unknown): string | null {
   return null;
 }
 
+function dbStatus(status?: string) {
+  if (status === "succeeded") return "succeeded";
+  if (["failed", "canceled", "aborted"].includes(status ?? "")) return "failed";
+  if (["starting", "processing"].includes(status ?? "")) return "running";
+  return "queued";
+}
+
 async function fetchPrediction(token: string, predictionId: string) {
   return fetch(
     `https://api.replicate.com/v1/predictions/${encodeURIComponent(
@@ -53,6 +57,58 @@ async function fetchPrediction(token: string, predictionId: string) {
       },
     },
   );
+}
+
+async function getCallerClient(req: Request) {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const authorization = req.headers.get("Authorization");
+
+  if (!supabaseUrl || !anonKey || !authorization) {
+    throw new Error("Supabase authentication is unavailable.");
+  }
+
+  const supabase = createClient(supabaseUrl, anonKey, {
+    global: {
+      headers: {
+        Authorization: authorization,
+      },
+    },
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  if (error || !user) {
+    throw new Error("Unauthorized");
+  }
+
+  return { supabase, user };
+}
+
+async function ownedGeneration(
+  supabase: Awaited<ReturnType<typeof getCallerClient>>["supabase"],
+  userId: string,
+  predictionId: string,
+) {
+  const { data, error } = await supabase
+    .from("generations")
+    .select("id")
+    .eq("user_id", userId)
+    .contains("metadata", { prediction_id: predictionId })
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data;
 }
 
 Deno.serve(async (req) => {
@@ -67,33 +123,25 @@ Deno.serve(async (req) => {
       throw new Error("REPLICATE_API_TOKEN is missing");
     }
 
+    const { supabase, user } = await getCallerClient(req);
     const body = await req.json();
     const action = body.action ?? "create";
 
-    if (action === "status") {
+    if (action === "status" || action === "result") {
       const predictionId = body.prediction_id;
 
       if (!predictionId || typeof predictionId !== "string") {
         return jsonResponse({ error: "prediction_id is required" }, 400);
       }
 
-      const response = await fetchPrediction(token, predictionId);
-      const text = await response.text();
+      const generation = await ownedGeneration(
+        supabase,
+        user.id,
+        predictionId,
+      );
 
-      return new Response(text, {
-        status: response.status,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      });
-    }
-
-    if (action === "result") {
-      const predictionId = body.prediction_id;
-
-      if (!predictionId || typeof predictionId !== "string") {
-        return jsonResponse({ error: "prediction_id is required" }, 400);
+      if (!generation) {
+        return jsonResponse({ error: "Generation not found." }, 404);
       }
 
       const predictionResponse = await fetchPrediction(token, predictionId);
@@ -101,6 +149,19 @@ Deno.serve(async (req) => {
 
       if (!predictionResponse.ok) {
         return jsonResponse(prediction, predictionResponse.status);
+      }
+
+      await supabase
+        .from("generations")
+        .update({
+          status: dbStatus(prediction.status),
+          error_message:
+            typeof prediction.error === "string" ? prediction.error : null,
+        })
+        .eq("id", generation.id);
+
+      if (action === "status") {
+        return jsonResponse(prediction, 200);
       }
 
       if (prediction.status !== "succeeded") {
@@ -193,15 +254,67 @@ Deno.serve(async (req) => {
       },
     );
 
-    const data = await response.json();
+    const prediction = await response.json();
 
-    return jsonResponse(data, response.status);
+    if (!response.ok) {
+      return jsonResponse(prediction, response.status);
+    }
+
+    if (!prediction.id || typeof prediction.id !== "string") {
+      return jsonResponse(
+        { error: "Replicate did not return a prediction ID." },
+        502,
+      );
+    }
+
+    const { error: trackingError } = await supabase.from("generations").insert({
+      user_id: user.id,
+      kind: "video",
+      prompt: prompt || "Image-to-video generation",
+      provider: "replicate",
+      model: "bytedance/seedance-2.5",
+      status: dbStatus(prediction.status),
+      metadata: {
+        prediction_id: prediction.id,
+        mode: image ? "image-to-video" : "text-to-video",
+        duration,
+        aspect_ratio,
+        resolution,
+        generate_audio,
+      },
+    });
+
+    if (trackingError) {
+      await fetch(
+        `https://api.replicate.com/v1/predictions/${encodeURIComponent(
+          prediction.id,
+        )}/cancel`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      ).catch(() => undefined);
+
+      return jsonResponse(
+        {
+          error:
+            "Kinora could not securely track this generation, so it was canceled.",
+        },
+        500,
+      );
+    }
+
+    return jsonResponse(prediction, 200);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
     return jsonResponse(
       {
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       },
-      500,
+      message === "Unauthorized" ? 401 : 500,
     );
   }
 });
