@@ -285,6 +285,8 @@ Deno.serve(async (req) => {
     });
 
     if (trackingError) {
+      console.error("Generation tracking error:", trackingError);
+
       await fetch(
         `https://api.replicate.com/v1/predictions/${encodeURIComponent(
           prediction.id,
@@ -299,8 +301,7 @@ Deno.serve(async (req) => {
 
       return jsonResponse(
         {
-          error:
-            "Kinora could not securely track this generation, so it was canceled.",
+          error: `Kinora could not securely track this generation: ${trackingError.message}`,
         },
         500,
       );
@@ -308,6 +309,8 @@ Deno.serve(async (req) => {
 
     return jsonResponse(prediction, 200);
   } catch (error) {
+    console.error("generate-seedance error:", error);
+
     const message = error instanceof Error ? error.message : String(error);
 
     return jsonResponse(
