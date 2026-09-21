@@ -9,7 +9,10 @@ import {
 } from "react";
 import { StudioHeader } from "@/components/StudioHeader";
 import {
+  fetchSeedanceVideoBlob,
   generateSeedanceVideo,
+  getSeedancePrediction,
+  isSeedanceTerminal,
   type SeedanceMode,
   type SeedancePrediction,
 } from "@/lib/seedance";
@@ -28,6 +31,8 @@ export default function CreatePage() {
   const [prediction, setPrediction] = useState<SeedancePrediction | null>(null);
   const [error, setError] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isLoadingVideo, setIsLoadingVideo] = useState(false);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState("");
 
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState("");
@@ -38,10 +43,116 @@ export default function CreatePage() {
     };
   }, [imagePreview]);
 
+  useEffect(() => {
+    return () => {
+      if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    };
+  }, [videoPreviewUrl]);
+
+  useEffect(() => {
+    const predictionId = prediction?.id;
+    const status = prediction?.status;
+
+    if (!predictionId || isSeedanceTerminal(status)) {
+      return;
+    }
+
+    const activePredictionId = predictionId;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function poll() {
+      try {
+        const latest = await getSeedancePrediction(activePredictionId);
+
+        if (cancelled) return;
+
+        setPrediction(latest);
+
+        if (!isSeedanceTerminal(latest.status)) {
+          timer = setTimeout(poll, 3000);
+        }
+      } catch (pollError) {
+        if (cancelled) return;
+
+        setError(
+          pollError instanceof Error
+            ? pollError.message
+            : "Kinora could not refresh the generation status.",
+        );
+      }
+    }
+
+    timer = setTimeout(poll, 2500);
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [prediction?.id, prediction?.status]);
+
+  useEffect(() => {
+    const predictionId = prediction?.id;
+
+    if (
+      prediction?.status !== "succeeded" ||
+      !predictionId ||
+      videoPreviewUrl ||
+      isLoadingVideo
+    ) {
+      return;
+    }
+
+    const completedPredictionId = predictionId;
+    let cancelled = false;
+
+    async function loadVideo() {
+      setIsLoadingVideo(true);
+
+      try {
+        const blob = await fetchSeedanceVideoBlob(completedPredictionId);
+
+        if (cancelled) return;
+
+        const objectUrl = URL.createObjectURL(blob);
+        setVideoPreviewUrl(objectUrl);
+      } catch (previewError) {
+        if (cancelled) return;
+
+        setError(
+          previewError instanceof Error
+            ? previewError.message
+            : "Kinora could not load the finished video.",
+        );
+      } finally {
+        if (!cancelled) setIsLoadingVideo(false);
+      }
+    }
+
+    loadVideo();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    prediction?.id,
+    prediction?.status,
+    videoPreviewUrl,
+    isLoadingVideo,
+  ]);
+
+  function resetVideoPreview() {
+    if (videoPreviewUrl) {
+      URL.revokeObjectURL(videoPreviewUrl);
+      setVideoPreviewUrl("");
+    }
+  }
+
   function handleModeChange(nextMode: SeedanceMode) {
     setMode(nextMode);
     setError("");
     setPrediction(null);
+    resetVideoPreview();
   }
 
   function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
@@ -70,6 +181,7 @@ export default function CreatePage() {
 
     setError("");
     setPrediction(null);
+    resetVideoPreview();
     setIsGenerating(true);
 
     try {
@@ -101,12 +213,17 @@ export default function CreatePage() {
     }
   }
 
+  const failed =
+    prediction?.status === "failed" ||
+    prediction?.status === "canceled" ||
+    prediction?.status === "aborted";
+
   return (
     <div className="mx-auto max-w-6xl px-5 py-8 sm:px-8 lg:px-12 lg:py-12">
       <StudioHeader
         eyebrow="CREATE"
         title="Bring the scene in your head to life."
-        description="Generate with Seedance 2.5 from a prompt or animate a still image."
+        description="Generate with Seedance 2.5, watch the job update live, and preview the finished clip right inside Kinora."
       />
 
       <div className="grid gap-5 lg:grid-cols-[1.25fr_0.75fr]">
@@ -293,19 +410,36 @@ export default function CreatePage() {
 
             {prediction ? (
               <div className="mt-4 space-y-3">
-                <StatusRow label="Status" value={prediction.status ?? "submitted"} />
+                <StatusRow
+                  label="Status"
+                  value={prediction.status ?? "submitted"}
+                />
                 <StatusRow label="Model" value="Seedance 2.5" />
                 <StatusRow
                   label="Mode"
-                  value={mode === "text-to-video" ? "Text to video" : "Image to video"}
+                  value={
+                    mode === "text-to-video"
+                      ? "Text to video"
+                      : "Image to video"
+                  }
                 />
                 {prediction.id ? (
                   <StatusRow label="Prediction ID" value={prediction.id} mono />
                 ) : null}
-                <p className="pt-2 text-xs leading-5 text-white/35">
-                  The job was handed to Seedance successfully. Finished-video
-                  polling and preview come next.
-                </p>
+
+                {!isSeedanceTerminal(prediction.status) ? (
+                  <div className="rounded-2xl border border-violet-300/15 bg-violet-400/[0.06] px-4 py-3 text-sm text-violet-100/65">
+                    Kinora is checking this job automatically…
+                  </div>
+                ) : null}
+
+                {failed ? (
+                  <div className="rounded-2xl border border-red-300/20 bg-red-400/[0.08] px-4 py-3 text-sm text-red-100/75">
+                    {typeof prediction.error === "string"
+                      ? prediction.error
+                      : "This generation did not complete successfully."}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <p className="mt-4 text-sm leading-6 text-white/45">
@@ -314,13 +448,36 @@ export default function CreatePage() {
             )}
           </div>
 
+          {prediction?.status === "succeeded" ? (
+            <div className="rounded-3xl border border-violet-300/15 bg-violet-400/[0.06] p-5">
+              <div className="text-xs uppercase tracking-[0.2em] text-violet-200/60">
+                Finished video
+              </div>
+
+              {videoPreviewUrl ? (
+                <video
+                  src={videoPreviewUrl}
+                  controls
+                  playsInline
+                  className="mt-4 w-full rounded-2xl border border-white/10 bg-black"
+                />
+              ) : (
+                <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-8 text-center text-sm text-white/45">
+                  {isLoadingVideo
+                    ? "Loading your finished clip…"
+                    : "Preparing video preview…"}
+                </div>
+              )}
+            </div>
+          ) : null}
+
           <div className="rounded-3xl border border-violet-300/15 bg-violet-400/[0.06] p-5">
             <div className="text-xs uppercase tracking-[0.2em] text-violet-200/60">
-              Kinora video · phase 2
+              Kinora video · phase 3
             </div>
             <p className="mt-3 text-sm leading-6 text-white/50">
-              Animate uploaded stills with Seedance while keeping text-to-video
-              available in the same Create workspace.
+              Jobs now update automatically and finished clips can play inside
+              Kinora without exposing your Replicate API token.
             </p>
           </div>
         </aside>
