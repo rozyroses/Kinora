@@ -1,4 +1,4 @@
-import { getSupabaseClient } from "@/lib/supabase";
+import { getSupabaseClient, supabaseConfig } from "@/lib/supabase";
 
 export type SeedanceMode = "text-to-video" | "image-to-video";
 
@@ -33,12 +33,10 @@ function getErrorMessage(value: unknown) {
     if (typeof message === "string") return message;
   }
 
-  return "Seedance could not start the generation.";
+  return "Seedance request failed.";
 }
 
-export async function generateSeedanceVideo(
-  input: SeedanceRequest,
-): Promise<SeedancePrediction> {
+async function requireSession() {
   const supabase = getSupabaseClient();
 
   if (!supabase) {
@@ -55,8 +53,23 @@ export async function generateSeedanceVideo(
     throw new Error("Sign in to Kinora before starting a generation.");
   }
 
+  return { supabase, session };
+}
+
+export function isSeedanceTerminal(status?: string) {
+  return ["succeeded", "failed", "canceled", "aborted"].includes(
+    status ?? "",
+  );
+}
+
+export async function generateSeedanceVideo(
+  input: SeedanceRequest,
+): Promise<SeedancePrediction> {
+  const { supabase } = await requireSession();
+
   const { data, error } = await supabase.functions.invoke("generate-seedance", {
     body: {
+      action: "create",
       prompt: input.prompt.trim(),
       duration: input.duration ?? 5,
       aspect_ratio: input.aspect_ratio ?? "16:9",
@@ -75,4 +88,65 @@ export async function generateSeedanceVideo(
   }
 
   return data as SeedancePrediction;
+}
+
+export async function getSeedancePrediction(
+  predictionId: string,
+): Promise<SeedancePrediction> {
+  const { supabase } = await requireSession();
+
+  const { data, error } = await supabase.functions.invoke("generate-seedance", {
+    body: {
+      action: "status",
+      prediction_id: predictionId,
+    },
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (data?.error) {
+    throw new Error(getErrorMessage(data.error));
+  }
+
+  return data as SeedancePrediction;
+}
+
+export async function fetchSeedanceVideoBlob(predictionId: string) {
+  const { session } = await requireSession();
+
+  if (!supabaseConfig.configured) {
+    throw new Error("Kinora is not connected to Supabase.");
+  }
+
+  const response = await fetch(
+    `${supabaseConfig.url}/functions/v1/generate-seedance`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        apikey: supabaseConfig.key,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        action: "result",
+        prediction_id: predictionId,
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown };
+      throw new Error(getErrorMessage(parsed.error));
+    } catch (error) {
+      if (error instanceof Error && error.message !== text) throw error;
+      throw new Error(text || "Could not load the finished video.");
+    }
+  }
+
+  return response.blob();
 }
