@@ -77,9 +77,11 @@ export default function CreatePage() {
 
         setError(
           pollError instanceof Error
-            ? pollError.message
-            : "Kinora could not refresh the generation status.",
+            ? `Temporary status check issue: ${pollError.message}`
+            : "Kinora hit a temporary status check issue.",
         );
+
+        timer = setTimeout(poll, 5000);
       }
     }
 
@@ -94,12 +96,7 @@ export default function CreatePage() {
   useEffect(() => {
     const predictionId = prediction?.id;
 
-    if (
-      prediction?.status !== "succeeded" ||
-      !predictionId ||
-      videoPreviewUrl ||
-      isLoadingVideo
-    ) {
+    if (prediction?.status !== "succeeded" || !predictionId) {
       return;
     }
 
@@ -134,12 +131,7 @@ export default function CreatePage() {
     return () => {
       cancelled = true;
     };
-  }, [
-    prediction?.id,
-    prediction?.status,
-    videoPreviewUrl,
-    isLoadingVideo,
-  ]);
+  }, [prediction?.id, prediction?.status]);
 
   function resetVideoPreview() {
     if (videoPreviewUrl) {
