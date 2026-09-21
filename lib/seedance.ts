@@ -1,11 +1,14 @@
 import { getSupabaseClient } from "@/lib/supabase";
 
+export type SeedanceMode = "text-to-video" | "image-to-video";
+
 export type SeedanceRequest = {
   prompt: string;
   duration?: number;
   aspect_ratio?: "16:9" | "9:16" | "1:1";
   resolution?: "720p";
   generate_audio?: boolean;
+  image?: string;
 };
 
 export type SeedancePrediction = {
@@ -59,6 +62,7 @@ export async function generateSeedanceVideo(
       aspect_ratio: input.aspect_ratio ?? "16:9",
       resolution: input.resolution ?? "720p",
       generate_audio: input.generate_audio ?? true,
+      image: input.image,
     },
   });
 
